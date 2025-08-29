@@ -109,7 +109,7 @@ def main(_argv):
     ]
     sidebar_logo_path = next((p for p in sidebar_logo_candidates if os.path.exists(p)), None)
     if sidebar_logo_path:
-        st.sidebar.image(sidebar_logo_path, use_column_width=False)
+        st.sidebar.image(sidebar_logo_path, use_container_width=False)
     st.sidebar.markdown("<div style='font-size:12px;color:#9aa0a6;margin-bottom:8px'>developed by Rivan — URBANESHA</div>", unsafe_allow_html=True)
 
     # ==== Source selection (Webcam / Upload / Path) ====
@@ -403,7 +403,7 @@ def main(_argv):
                     col_exit.metric(label="Vehicle Exit", value=all_vehicle_exit_count)
 
                     # Show Result Video
-                    st.image(resized, channels="BGR", use_column_width=True)
+                    st.image(resized, channels="BGR", use_container_width=True)
 
                     # People metrics row (immediately after vehicle metrics)
                     if enable_people:
