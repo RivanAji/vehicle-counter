@@ -171,16 +171,30 @@ def main(_argv):
     cap_size.release()
 
     st.subheader("Adjust Entry and Exit Lines")
-    canvas_result = st_canvas(
-        fill_color="rgba(255, 0, 0, 0.3)",
-        stroke_width=3,
-        stroke_color="red",
-        background_image=img_pil,
-        height=450,
-        width=800,
-        drawing_mode="line",
-        key="canvas",
-    )
+    try:
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 0, 0, 0.3)",
+            stroke_width=3,
+            stroke_color="red",
+            background_image=img_pil,
+            height=450,
+            width=800,
+            drawing_mode="line",
+            key="canvas",
+        )
+    except Exception:
+        # Fallback for Streamlit versions where drawable-canvas cannot convert background image
+        st.warning("Canvas background image is not supported on this Streamlit version. You can still draw the counting line on a blank canvas.")
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 0, 0, 0.3)",
+            stroke_width=3,
+            stroke_color="red",
+            background_color="#000000",
+            height=450,
+            width=800,
+            drawing_mode="line",
+            key="canvas_nobg",
+        )
     # Ambil garis dari canvas untuk entry_line dan exit_line
     lines = canvas_result.json_data["objects"] if (canvas_result and canvas_result.json_data) else []
 
