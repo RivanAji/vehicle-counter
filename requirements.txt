@@ -2,7 +2,7 @@ absl-py==2.3.0
 numpy==1.26.4
 opencv-python==4.11.0.86
 plotly==5.22.0
-streamlit==1.34.0
+streamlit==1.40.2
 streamlit-drawable-canvas==0.9.3
 ultralytics==8.3.157
 Pillow==10.4.0
