@@ -6,3 +6,5 @@ streamlit==1.40.2
 streamlit-drawable-canvas==0.9.3
 ultralytics==8.3.157
 Pillow==10.4.0
+lapx==0.5.9
+filterpy==1.4.5
