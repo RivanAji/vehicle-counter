@@ -1,8 +1,8 @@
 import cv2
 from ultralytics import YOLO
 import numpy as np
-import time as _time
-#
+import time
+from absl import app, flags
 import sys
 import os
 import tempfile
@@ -12,11 +12,11 @@ from streamlit_drawable_canvas import st_canvas
 import plotly.graph_objects as go
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 
-# ---- Runtime constants (replace absl.flags for Streamlit) ----
-MODEL_PATH_DEFAULT = "yolo11m.pt"
-VIDEO_PATH_DEFAULT = "highway.mp4"
-CONF_THRES_DEFAULT = 0.2
-
+# Argument
+FLAGS = flags.FLAGS
+flags.DEFINE_string("model", "yolo11m.pt", "YOLO11 Model")
+flags.DEFINE_string("video", "highway.mp4", "Video")
+flags.DEFINE_string("conf", "0.2", "Confidence Threshold")
 
 ### Configuration
 st.set_page_config(
@@ -129,7 +129,7 @@ def main(_argv):
         if up is not None:
             uploaded_bytes = up.read()
     elif src_mode == "Path":
-        video_path = st.sidebar.text_input("Local video path", value=VIDEO_PATH_DEFAULT)
+        video_path = st.sidebar.text_input("Local video path", value=FLAGS.video)
     elif src_mode == "URL Stream":
         stream_url = st.sidebar.text_input("Stream URL (RTSP/HTTP, e.g. m3u8/rtsp)", "")
 
@@ -265,7 +265,7 @@ def main(_argv):
     # ================= WebRTC (browser webcam) path =================
     if src_mode == "Webcam (WebRTC)":
         # Load YOLO once here so each transformer instance can reuse a single weights path
-        model_path = MODEL_PATH_DEFAULT
+        model_path = FLAGS.model
 
         class YOLOTransformer(VideoTransformerBase):
             def __init__(self):
@@ -287,9 +287,6 @@ def main(_argv):
                 self.vehicle_exit_count  = {1: 0, 2: 0, 3: 0, 5: 0, 7: 0}
                 self.people_entry_count  = {0: 0} if enable_people else {}
                 self.people_exit_count   = {0: 0} if enable_people else {}
-                # FPS tracking
-                self.fps = 0.0
-                self._t_prev = None
 
             def transform(self, frame):
                 img = frame.to_ndarray(format="bgr24")
@@ -298,7 +295,7 @@ def main(_argv):
                 cv2.line(img, (entry_line['x1'], entry_line['y1']), (exit_line['x2'], exit_line['y2']), (0, 127, 255), 3)
 
                 # Run tracking on a single frame (persist=True keeps IDs across frames)
-                res = self.model.track(img, persist=True, tracker="bytetrack.yaml", conf=float(CONF_THRES_DEFAULT), verbose=False)[0]
+                res = self.model.track(img, persist=True, tracker="bytetrack.yaml", conf=float(FLAGS.conf), verbose=False)[0]
 
                 if res.boxes.id is not None:
                     boxes = res.boxes.xyxy.int().cpu().tolist()
@@ -357,54 +354,13 @@ def main(_argv):
                 except Exception:
                     pass
 
-                # --- FPS (EMA) ---
-                import time as _time
-                now = _time.time()
-                if self._t_prev is not None:
-                    inst = 1.0 / max(1e-6, (now - self._t_prev))
-                    self.fps = 0.9 * self.fps + 0.1 * inst if self.fps > 0 else inst
-                self._t_prev = now
-
                 return img
 
-            def get_stats(self):
-                veh_in = sum(self.vehicle_entry_count.values())
-                veh_out = sum(self.vehicle_exit_count.values())
-                people = None
-                try:
-                    people = {
-                        "in": sum(self.people_entry_count.values()) if self.people_entry_count else 0,
-                        "out": sum(self.people_exit_count.values()) if self.people_exit_count else 0,
-                    }
-                except Exception:
-                    people = None
-                return {"fps": float(self.fps), "veh_in": int(veh_in), "veh_out": int(veh_out), "people": people}
-
-        webrtc_ctx = webrtc_streamer(
+        webrtc_streamer(
             key="uv-yolo-webrtc",
             video_transformer_factory=YOLOTransformer,
             media_stream_constraints={"video": {"width": 1280, "height": 720}, "audio": False}
         )
-
-        # Live metrics panel during WebRTC streaming
-        metrics_ph = st.empty()
-        if webrtc_ctx and webrtc_ctx.state.playing:
-            import time as _time
-            while webrtc_ctx.state.playing:
-                vt = webrtc_ctx.video_transformer
-                if vt is None:
-                    break
-                stats = vt.get_stats()
-                with metrics_ph.container():
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("FPS", f"{stats['fps']:.2f}")
-                    c2.metric("Vehicle Enter", stats["veh_in"])
-                    c3.metric("Vehicle Exit", stats["veh_out"])
-                    if enable_people and stats["people"] is not None:
-                        p1, p2 = st.columns(2)
-                        p1.metric("People Enter", stats["people"]["in"])
-                        p2.metric("People Exit", stats["people"]["out"])
-                _time.sleep(0.3)
 
         # Skip the server-side VideoCapture loop below in WebRTC mode
         return
@@ -427,7 +383,7 @@ def main(_argv):
         return
 
     # Load YOLO model    
-    model = YOLO(MODEL_PATH_DEFAULT)  # Load the YOLO11 model
+    model = YOLO(FLAGS.model)  # Load the YOLO11 model
 
     batch_size = 2  # Batch size for parallel processing
     frames = []       
@@ -469,7 +425,7 @@ def main(_argv):
 
     offset = 25
 
-    start_time = _time.time()    
+    start_time = time.time()    
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
@@ -483,12 +439,12 @@ def main(_argv):
         # Once the batch size has been reached, run tracking.
         if len(frames) == batch_size:            
             # Perform Object Tracking using YOLO
-            results = model.track(frames, persist=True, tracker="bytetrack.yaml", conf=float(CONF_THRES_DEFAULT), verbose=False)
+            results = model.track(frames, persist=True, tracker="bytetrack.yaml", conf=float(FLAGS.conf), verbose=False)    
             
             frames = []  # Empty the batch after processing               
 
             # FPS Calculation
-            end_time = _time.time()
+            end_time = time.time()
             fps = 2 / (end_time - start_time)
             fps = float("{:.2f}".format(fps))           
 
@@ -601,7 +557,7 @@ def main(_argv):
                     fig = go.Figure(data=[go.Pie(labels=labels, values=values, textinfo='text',
                                                 marker_colors=pie_colors)])
                     fig.update_layout(title_text='Vehicle Statistics', height=400, margin=dict(b=0))
-                    frame_id = int(_time.time() * 1000)  # atau bisa pakai variabel frame_count jika ada
+                    frame_id = int(time.time() * 1000)  # atau bisa pakai variabel frame_count jika ada
                     st.plotly_chart(fig, use_container_width=True, key=f"vehicle_stats_chart_{frame_id}")
 
                     grand_total = sum(values)
@@ -633,5 +589,4 @@ def main(_argv):
 
 
 if __name__ == '__main__':
-    # Streamlit runs the script directly; avoid absl.app to prevent DuplicateFlagError
-    main([])
+    app.run(main)
