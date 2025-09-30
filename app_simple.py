@@ -287,9 +287,16 @@ def main(_argv):
                 self.vehicle_exit_count  = {1: 0, 2: 0, 3: 0, 5: 0, 7: 0}
                 self.people_entry_count  = {0: 0} if enable_people else {}
                 self.people_exit_count   = {0: 0} if enable_people else {}
+                self.frame_times = []
 
             def transform(self, frame):
+                import time
                 img = frame.to_ndarray(format="bgr24")
+
+                # FPS tracking
+                self.frame_times.append(time.time())
+                if len(self.frame_times) > 30:
+                    self.frame_times = self.frame_times[-30:]
 
                 # Draw counting line using entry_line/exit_line from outer scope
                 cv2.line(img, (entry_line['x1'], entry_line['y1']), (exit_line['x2'], exit_line['y2']), (0, 127, 255), 3)
@@ -356,12 +363,46 @@ def main(_argv):
 
                 return img
 
-        webrtc_streamer(
+            def get_stats(self):
+                # compute EMA fps
+                fps = 0.0
+                if self.frame_times:
+                    intervals = [t2 - t1 for t1, t2 in zip(self.frame_times[:-1], self.frame_times[1:])]
+                    if intervals:
+                        fps = 1.0 / (sum(intervals)/len(intervals))
+                return {
+                    "fps": fps,
+                    "veh_in": sum(self.vehicle_entry_count.values()),
+                    "veh_out": sum(self.vehicle_exit_count.values()),
+                    "people": {
+                        "in": sum(self.people_entry_count.values()) if self.people_entry_count else 0,
+                        "out": sum(self.people_exit_count.values()) if self.people_exit_count else 0,
+                    }
+                }
+
+        webrtc_ctx = webrtc_streamer(
             key="uv-yolo-webrtc",
             video_transformer_factory=YOLOTransformer,
             media_stream_constraints={"video": {"width": 1280, "height": 720}, "audio": False}
         )
 
+        if webrtc_ctx and webrtc_ctx.state.playing:
+            metrics = st.empty()
+            import time
+            while webrtc_ctx.state.playing:
+                vt = webrtc_ctx.video_transformer
+                if vt:
+                    stats = vt.get_stats()
+                    with metrics.container():
+                        c1,c2,c3 = st.columns(3)
+                        c1.metric("FPS", f"{stats['fps']:.2f}")
+                        c2.metric("Vehicle Enter", stats['veh_in'])
+                        c3.metric("Vehicle Exit", stats['veh_out'])
+                        if enable_people:
+                            p1,p2 = st.columns(2)
+                            p1.metric("People Enter", stats['people']['in'])
+                            p2.metric("People Exit", stats['people']['out'])
+                time.sleep(0.5)
         # Skip the server-side VideoCapture loop below in WebRTC mode
         return
     # ================= end WebRTC path =================
