@@ -1,7 +1,7 @@
 import cv2
 from ultralytics import YOLO
 import numpy as np
-import time
+import time as _time
 #
 import sys
 import os
@@ -469,7 +469,7 @@ def main(_argv):
 
     offset = 25
 
-    start_time = time.time()    
+    start_time = _time.time()    
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
@@ -488,7 +488,7 @@ def main(_argv):
             frames = []  # Empty the batch after processing               
 
             # FPS Calculation
-            end_time = time.time()
+            end_time = _time.time()
             fps = 2 / (end_time - start_time)
             fps = float("{:.2f}".format(fps))           
 
@@ -601,7 +601,7 @@ def main(_argv):
                     fig = go.Figure(data=[go.Pie(labels=labels, values=values, textinfo='text',
                                                 marker_colors=pie_colors)])
                     fig.update_layout(title_text='Vehicle Statistics', height=400, margin=dict(b=0))
-                    frame_id = int(time.time() * 1000)  # atau bisa pakai variabel frame_count jika ada
+                    frame_id = int(_time.time() * 1000)  # atau bisa pakai variabel frame_count jika ada
                     st.plotly_chart(fig, use_container_width=True, key=f"vehicle_stats_chart_{frame_id}")
 
                     grand_total = sum(values)
