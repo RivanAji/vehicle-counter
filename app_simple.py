@@ -175,6 +175,9 @@ def main(_argv):
         frame_video = np.zeros((450, 800, 3), dtype=np.uint8)
     frame_height, frame_width = frame_video.shape[:2]
     cap_size.release()
+    # Normalize target frame size for WebRTC so canvas→frame scaling stays correct
+    if src_mode == "Webcam (WebRTC)":
+        frame_width, frame_height = 1280, 720
 
     st.subheader("Adjust Entry and Exit Lines")
     try:
@@ -344,8 +347,10 @@ def main(_argv):
 
                 # overlay counters on the outgoing frame (reuse existing helper)
                 try:
+                    w = img.shape[1]
+                    right_panel_x = max(10, w - 210)
                     show_counter(img, "Vehicle Enter", self.class_names, self.vehicle_entry_count, 10)
-                    show_counter(img, "Vehicle Exit", self.class_names, self.vehicle_exit_count, 1710)
+                    show_counter(img, "Vehicle Exit", self.class_names, self.vehicle_exit_count, right_panel_x)
                 except Exception:
                     pass
 
@@ -354,7 +359,7 @@ def main(_argv):
         webrtc_streamer(
             key="uv-yolo-webrtc",
             video_transformer_factory=YOLOTransformer,
-            media_stream_constraints={"video": True, "audio": False}
+            media_stream_constraints={"video": {"width": 1280, "height": 720}, "audio": False}
         )
 
         # Skip the server-side VideoCapture loop below in WebRTC mode
@@ -500,8 +505,10 @@ def main(_argv):
                     prev_centers[track_id] = (center_x, center_y)                     
             
             # Show Counters
+            w = frame.shape[1]
+            right_panel_x = max(10, w - 210)
             show_counter(frame, "Vehicle Enter", class_names, vehicle_entry_count, 10)
-            show_counter(frame, "Vehicle Exit", class_names, vehicle_exit_count, 1710)                         
+            show_counter(frame, "Vehicle Exit", class_names, vehicle_exit_count, right_panel_x)
 
             resized = cv2.resize(frame, (800, 450))
 
