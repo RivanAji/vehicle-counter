@@ -10,6 +10,7 @@ import tempfile
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 import plotly.graph_objects as go
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 
 # Argument
 FLAGS = flags.FLAGS
@@ -114,14 +115,14 @@ def main(_argv):
 
     # ==== Source selection (Webcam / Upload / Path) ====
     st.sidebar.header("Input Source")
-    src_mode = st.sidebar.radio("Source", ["Webcam", "Upload", "Path", "URL Stream"], index=1)
+    src_mode = st.sidebar.radio("Source", ["Webcam (WebRTC)", "Upload", "Path", "URL Stream", "Webcam (Server)"], index=0)
 
     webcam_idx = None
     uploaded_bytes = None
     video_path = None
     stream_url = None
 
-    if src_mode == "Webcam":
+    if src_mode == "Webcam (Server)":
         webcam_idx = st.sidebar.number_input("Webcam index", 0, 10, 0, step=1)
     elif src_mode == "Upload":
         up = st.sidebar.file_uploader("Upload a video", type=["mp4", "mov", "avi", "mkv"])
@@ -152,12 +153,17 @@ def main(_argv):
         return cv2.VideoCapture(), None
 
     # Ambil satu frame dari sumber terpilih untuk background canvas
-    cap_preview, _tmp_preview = _open_capture(webcam_idx, uploaded_bytes, video_path, stream_url)
-    ret, frame_preview = cap_preview.read()
-    cap_preview.release()
-    if not ret:
+    if src_mode == "Webcam (WebRTC)":
+        # For WebRTC mode, we cannot grab a server-side preview frame; use a blank canvas
         frame_preview = np.zeros((450, 800, 3), dtype=np.uint8)
-        st.info("Preview is blank because the selected source has not provided a frame yet. Choose/Upload a video or provide a valid stream URL.")
+        st.info("WebRTC mode uses your browser's camera. Start the stream below; the canvas preview is blank by design.")
+    else:
+        cap_preview, _tmp_preview = _open_capture(webcam_idx, uploaded_bytes, video_path, stream_url)
+        ret, frame_preview = cap_preview.read()
+        cap_preview.release()
+        if not ret:
+            frame_preview = np.zeros((450, 800, 3), dtype=np.uint8)
+            st.info("Preview is blank because the selected source has not provided a frame yet. Choose/Upload a video or provide a valid stream URL.")
 
     # Konversi ke PIL image (canvas butuh PIL)
     from PIL import Image
@@ -252,13 +258,117 @@ def main(_argv):
         st.info("Only the first line is used.")
 
     result_elem = st.empty()
-    
+
+    # ================= WebRTC (browser webcam) path =================
+    if src_mode == "Webcam (WebRTC)":
+        # Load YOLO once here so each transformer instance can reuse a single weights path
+        model_path = FLAGS.model
+
+        class YOLOTransformer(VideoTransformerBase):
+            def __init__(self):
+                from ultralytics import YOLO
+                self.model = YOLO(model_path)
+                # class names & colors
+                classes_path = "coco.names"
+                with open(classes_path, "r") as f:
+                    self.class_names = f.read().strip().split("\n")
+                np.random.seed(42)
+                self.colors = np.random.randint(0, 255, size=(len(self.class_names), 3))
+                # tracking & counters
+                self.prev_centers = {}
+                self.entered_vehicle_ids = []
+                self.exited_vehicle_ids = []
+                self.vehicle_class_ids = [1, 2, 3, 5, 7]  # bicycle, car, motorcycle, bus, truck
+                self.people_class_ids  = [0] if enable_people else []
+                self.vehicle_entry_count = {1: 0, 2: 0, 3: 0, 5: 0, 7: 0}
+                self.vehicle_exit_count  = {1: 0, 2: 0, 3: 0, 5: 0, 7: 0}
+                self.people_entry_count  = {0: 0} if enable_people else {}
+                self.people_exit_count   = {0: 0} if enable_people else {}
+
+            def transform(self, frame):
+                img = frame.to_ndarray(format="bgr24")
+
+                # Draw counting line using entry_line/exit_line from outer scope
+                cv2.line(img, (entry_line['x1'], entry_line['y1']), (exit_line['x2'], exit_line['y2']), (0, 127, 255), 3)
+
+                # Run tracking on a single frame (persist=True keeps IDs across frames)
+                res = self.model.track(img, persist=True, tracker="bytetrack.yaml", conf=float(FLAGS.conf), verbose=False)[0]
+
+                if res.boxes.id is not None:
+                    boxes = res.boxes.xyxy.int().cpu().tolist()
+                    class_ids = res.boxes.cls.cpu().tolist()
+                    track_ids = res.boxes.id.int().cpu().tolist()
+
+                    for box, track_id, class_id in zip(boxes, track_ids, class_ids):
+                        x1, y1, x2, y2 = box
+                        color = self.colors[int(class_id)]
+                        B, G, R = map(int, color)
+                        text = f"{track_id} - {self.class_names[int(class_id)]}"
+
+                        center_x = int((x1 + x2) / 2)
+                        center_y = int((y1 + y2) / 2)
+
+                        cv2.rectangle(img, (x1, y1), (x2, y2), (B, G, R), 2)
+                        cv2.rectangle(img, (x1 - 1, y1 - 20), (x1 + len(text) * 12, y1), (B, G, R), -1)
+                        cv2.putText(img, text, (x1 + 5, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+                        # previous center for crossing logic
+                        if track_id not in self.prev_centers:
+                            self.prev_centers[track_id] = (center_x, center_y)
+                        prev_x, prev_y = self.prev_centers[track_id]
+
+                        side_prev = point_side_of_line(prev_x, prev_y, entry_line['x1'], entry_line['y1'], entry_line['x2'], entry_line['y2'])
+                        side_curr = point_side_of_line(center_x, center_y, entry_line['x1'], entry_line['y1'], entry_line['x2'], entry_line['y2'])
+
+                        if side_prev * side_curr < 0:
+                            moving_enter = side_prev < side_curr
+                            tid = int(track_id)
+                            # vehicles
+                            if class_id in self.vehicle_class_ids:
+                                if moving_enter:
+                                    if tid not in self.entered_vehicle_ids:
+                                        self.vehicle_entry_count[class_id] += 1
+                                        self.entered_vehicle_ids.append(tid)
+                                else:
+                                    if tid not in self.exited_vehicle_ids:
+                                        self.vehicle_exit_count[class_id] += 1
+                                        self.exited_vehicle_ids.append(tid)
+                            # people
+                            if class_id in self.people_class_ids:
+                                if moving_enter:
+                                    self.people_entry_count[0] += 1
+                                else:
+                                    self.people_exit_count[0] += 1
+
+                        self.prev_centers[track_id] = (center_x, center_y)
+
+                # overlay counters on the outgoing frame (reuse existing helper)
+                try:
+                    show_counter(img, "Vehicle Enter", self.class_names, self.vehicle_entry_count, 10)
+                    show_counter(img, "Vehicle Exit", self.class_names, self.vehicle_exit_count, 1710)
+                except Exception:
+                    pass
+
+                return img
+
+        webrtc_streamer(
+            key="uv-yolo-webrtc",
+            video_transformer_factory=YOLOTransformer,
+            media_stream_constraints={"video": True, "audio": False}
+        )
+
+        # Skip the server-side VideoCapture loop below in WebRTC mode
+        return
+    # ================= end WebRTC path =================
+
     # Initialize the video capture from selected source
     cap, _tmp_run = _open_capture(webcam_idx, uploaded_bytes, video_path, stream_url)
 
     if not cap.isOpened():
         print('Error: Unable to open video source.')
         return
+    if src_mode == "Webcam (Server)":
+        st.warning("You're using server-side webcam access. This only works when the Streamlit app runs on a machine that physically has the camera (e.g., localhost). For browser webcam, choose 'Webcam (WebRTC)'.")
     if src_mode == "URL Stream" and not stream_url:
         st.warning("Please provide a valid stream URL (e.g., RTSP or HLS m3u8).")
         return
